@@ -1,0 +1,19 @@
+# SkillLineAbility.dbc - maps spells to skill lines (client-side spellbook
+# grouping; the server uses the `skill_line_ability` DB table instead).
+# 15 fields, 60-byte records.
+fields:
+  - id
+  - skillId
+  - spellId
+  - racemask
+  - classmask
+  - unk5
+  - unk6
+  - req_skill_value
+  - forward_spellid
+  - learnOnGetSkill
+  - max_value
+  - min_value
+  - unk12
+  - unk13
+  - reqtrainpoints

@@ -1,0 +1,11 @@
+# SkillRaceClassInfo.dbc - which races/classes may learn each skill.
+# 8 fields, 32-byte records.
+fields:
+  - id
+  - skillId
+  - raceMask
+  - classMask
+  - flags
+  - reqLevel
+  - skillTierId
+  - skillCostID
