@@ -55,6 +55,11 @@ pub enum PatchEntry {
         /// Column containing the key.  May be a field name or numeric index.
         #[serde(default)]
         key_column: Option<String>,
+        /// Skip the duplicate-key check for this insert.  Useful for tables
+        /// whose key column is not unique on its own (for example
+        /// `CharBaseInfo.dbc`, keyed by a (race, class) pair).
+        #[serde(default)]
+        allow_duplicate: bool,
         /// Mapping of field names (or indices) to values for the new record.
         values: HashMap<String, ValueType>,
     },
@@ -69,6 +74,9 @@ pub enum PatchEntry {
         /// Column containing the key.  May be a field name or numeric string.
         #[serde(default)]
         key_column: Option<String>,
+        /// Skip the duplicate-key check for this copy (see `Insert`).
+        #[serde(default)]
+        allow_duplicate: bool,
         /// Mapping of field names (or indices) to new values for the copied record.
         values: HashMap<String, ValueType>,
     },

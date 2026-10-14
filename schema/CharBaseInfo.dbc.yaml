@@ -1,0 +1,6 @@
+# CharBaseInfo.dbc - valid (race, class) combinations.
+# Packed layout: 2 fields, 2-byte records (two u8 values).
+# Used only by the client character-creation screen; the server never reads it.
+fields:
+  - race:u8
+  - class:u8

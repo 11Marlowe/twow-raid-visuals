@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 mod dbc;
 mod patch;
 
-use dbc::{build_string_map, read_dbc, write_dbc};
+use dbc::{build_string_map, read_dbc, write_dbc, FieldType};
 use patch::{PatchEntry, PatchFile, ValueType};
 
 /// Command line interface for the WoW DBC manager.  Supports applying
@@ -101,10 +101,19 @@ enum Commands {
     },
 }
 
+/// A parsed DBC schema: a field-name to column-index map plus the on-disk
+/// storage type of every listed column (needed for packed record layouts).
+pub struct Schema {
+    /// Lowercased field name -> column index.
+    pub map: HashMap<String, usize>,
+    /// Storage type per column, in schema order.
+    pub types: Vec<FieldType>,
+}
+
 /// Resolves a key column name or index to a numeric index
 fn resolve_key_column_index(
     key_column: &Option<String>,
-    schema_map: &Option<HashMap<String, usize>>,
+    schema: &Option<Schema>,
     file_name: &str,
     pf_origin: &str,
 ) -> usize {
@@ -115,8 +124,8 @@ fn resolve_key_column_index(
                 idx
             } else {
                 // Look up by name in schema map
-                if let Some(ref schema) = schema_map {
-                    if let Some(&idx) = schema.get(&col_name.to_lowercase()) {
+                if let Some(schema) = schema {
+                    if let Some(&idx) = schema.map.get(&col_name.to_lowercase()) {
                         idx
                     } else {
                         println!(
@@ -141,15 +150,15 @@ fn resolve_key_column_index(
 /// Resolves a field name or index to a numeric index
 fn resolve_field_index(
     field_name: &str,
-    schema_map: &Option<HashMap<String, usize>>,
+    schema: &Option<Schema>,
 ) -> Option<usize> {
     // Try parse as number
     if let Ok(idx) = field_name.parse::<usize>() {
         Some(idx)
     } else {
-        schema_map
+        schema
             .as_ref()
-            .and_then(|schema| schema.get(&field_name.to_lowercase()).cloned())
+            .and_then(|schema| schema.map.get(&field_name.to_lowercase()).cloned())
     }
 }
 
@@ -157,7 +166,7 @@ fn resolve_field_index(
 fn apply_values_to_record(
     values: &HashMap<String, ValueType>,
     record: &mut Vec<u32>,
-    schema_map: &Option<HashMap<String, usize>>,
+    schema: &Option<Schema>,
     string_map: &mut HashMap<String, u32>,
     new_strings: &mut Vec<String>,
     string_block: &[u8],
@@ -168,7 +177,7 @@ fn apply_values_to_record(
     let mut sorted_fields: Vec<_> = values.iter().collect();
     sorted_fields.sort_by_key(|(k, _)| (*k).clone());
     for (field_name, value) in sorted_fields {
-        let field_idx = match resolve_field_index(field_name, schema_map) {
+        let field_idx = match resolve_field_index(field_name, schema) {
             Some(i) => i,
             None => {
                 println!(
@@ -494,14 +503,74 @@ fn load_patches(patch_paths: &[PathBuf]) -> Result<HashMap<String, Vec<PatchFile
     Ok(patches_map)
 }
 
-/// Load a schema mapping for a given DBC file.  The schema directory must
-/// contain a YAML file whose name is derived from the DBC file name with
-/// `.yaml` appended (for example `Spell.dbc.yaml`).  The YAML can be either
-/// a sequence of strings representing field names in order, or a mapping with
-/// a `fields` entry that is such a sequence.  Field names are converted to
-/// lowercase for case‑insensitive lookup.  Returns `None` if the file
-/// doesn't exist or cannot be parsed.
-fn load_schema_map(schema_dir: &Path, dbc_file_name: &str) -> Option<HashMap<String, usize>> {
+/// Parse a field type token (`u8`, `u32`, `f32`, plus common aliases).
+fn parse_field_type(token: &str) -> Option<FieldType> {
+    match token.to_lowercase().as_str() {
+        "u8" | "uint8" | "byte" => Some(FieldType::U8),
+        "u32" | "uint32" | "uint" | "int" | "int32" => Some(FieldType::U32),
+        "f32" | "float" => Some(FieldType::F32),
+        _ => None,
+    }
+}
+
+/// Parse a single schema field entry, which may be either a plain field
+/// name (`ID`, `race:u8`) or a mapping (`{ name: race, type: u8 }`).
+fn parse_field_entry(
+    item: &serde_yaml::Value,
+    index: usize,
+    map: &mut HashMap<String, usize>,
+    types: &mut Vec<FieldType>,
+) {
+    match item {
+        serde_yaml::Value::String(name) => {
+            // Support the compact `name:type` form (e.g. `race:u8`)
+            let (name, field_type) = match name.rsplit_once(':') {
+                Some((base, suffix)) if !base.is_empty() => match parse_field_type(suffix) {
+                    Some(field_type) => (base.to_string(), field_type),
+                    None => (name.clone(), FieldType::U32),
+                },
+                _ => (name.clone(), FieldType::U32),
+            };
+            map.insert(name.to_lowercase(), index);
+            types.push(field_type);
+        }
+        serde_yaml::Value::Mapping(entry) => {
+            let mut name: Option<String> = None;
+            let mut field_type = FieldType::U32;
+            for (k, v) in entry.iter() {
+                if let serde_yaml::Value::String(key) = k {
+                    match key.as_str() {
+                        "name" | "field" => name = v.as_str().map(|s| s.to_string()),
+                        "type" => {
+                            field_type = v
+                                .as_str()
+                                .and_then(parse_field_type)
+                                .unwrap_or(FieldType::U32)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(name) = name {
+                map.insert(name.to_lowercase(), index);
+            }
+            types.push(field_type);
+        }
+        _ => {
+            types.push(FieldType::U32);
+        }
+    }
+}
+
+/// Load the schema for a given DBC file.  The schema directory must contain
+/// a YAML file whose name is derived from the DBC file name with `.yaml`
+/// appended (for example `Spell.dbc.yaml`).  The YAML can be a sequence of
+/// field entries, or a mapping with a `fields` entry that is such a
+/// sequence.  Each entry is a field name (optionally with a `:u8`/`:u32`/
+/// `:f32` suffix) or a `{ name: ..., type: ... }` mapping.  Field names are
+/// converted to lowercase for case‑insensitive lookup.  Returns `None` if
+/// the file doesn't exist or cannot be parsed.
+fn load_schema(schema_dir: &Path, dbc_file_name: &str) -> Option<Schema> {
     use std::io::BufReader;
     // Attempt to load a YAML file for this DBC from the provided
     // schema directory.  If it does not exist there, fall back to
@@ -527,27 +596,24 @@ fn load_schema_map(schema_dir: &Path, dbc_file_name: &str) -> Option<HashMap<Str
                 continue;
             }
         };
-        let mut mapping: HashMap<String, usize> = HashMap::new();
+        let mut map: HashMap<String, usize> = HashMap::new();
+        let mut types: Vec<FieldType> = Vec::new();
         match value {
             serde_yaml::Value::Sequence(seq) => {
                 for (i, item) in seq.iter().enumerate() {
-                    if let serde_yaml::Value::String(name) = item {
-                        mapping.insert(name.to_lowercase(), i);
-                    }
+                    parse_field_entry(item, i, &mut map, &mut types);
                 }
-                return Some(mapping);
+                return Some(Schema { map, types });
             }
-            serde_yaml::Value::Mapping(map) => {
-                // Try to find "fields" entry
+            serde_yaml::Value::Mapping(schema_map) => {
+                // Try to find a "fields" entry
                 let mut found_fields = false;
-                for (k, v) in map.iter() {
+                for (k, v) in schema_map.iter() {
                     if let serde_yaml::Value::String(ref key_name) = k {
                         if key_name == "fields" {
                             if let serde_yaml::Value::Sequence(seq) = v {
                                 for (i, item) in seq.iter().enumerate() {
-                                    if let serde_yaml::Value::String(name) = item {
-                                        mapping.insert(name.to_lowercase(), i);
-                                    }
+                                    parse_field_entry(item, i, &mut map, &mut types);
                                 }
                                 found_fields = true;
                                 break;
@@ -556,20 +622,24 @@ fn load_schema_map(schema_dir: &Path, dbc_file_name: &str) -> Option<HashMap<Str
                     }
                 }
                 if found_fields {
-                    return Some(mapping);
+                    return Some(Schema { map, types });
                 }
                 // Fallback: treat mapping keys as names and values as indices
-                let mut ok = false;
-                for (k, v) in map.iter() {
+                let mut indexed: Vec<(usize, String)> = Vec::new();
+                for (k, v) in schema_map.iter() {
                     if let (serde_yaml::Value::String(name), serde_yaml::Value::Number(num)) = (k, v) {
                         if let Some(i) = num.as_u64() {
-                            mapping.insert(name.to_lowercase(), i as usize);
-                            ok = true;
+                            indexed.push((i as usize, name.to_lowercase()));
                         }
                     }
                 }
-                if ok {
-                    return Some(mapping);
+                if !indexed.is_empty() {
+                    let width = indexed.iter().map(|(i, _)| *i).max().unwrap_or(0) + 1;
+                    types = vec![FieldType::U32; width];
+                    for (i, name) in indexed {
+                        map.insert(name, i);
+                    }
+                    return Some(Schema { map, types });
                 }
             }
             _ => {}
@@ -605,17 +675,19 @@ fn apply_command(
             .ok_or_else(|| anyhow::anyhow!("Invalid DBC file path: {:?}", dbc_path))?;
         println!("Processing {}", file_name);
 
+        // Load the schema for this DBC (if available).  Packed record
+        // layouts need the typed schema before records can be decoded.
+        let schema = load_schema(schema_dir, &file_name);
+        let field_types: Option<&[FieldType]> = schema.as_ref().map(|s| s.types.as_slice());
+
         // Read the DBC
-        let (header, mut records, mut string_block) = read_dbc(dbc_path)
+        let (header, mut records, mut string_block) = read_dbc(dbc_path, field_types)
             .with_context(|| format!("Failed to read DBC file {:?}", dbc_path))?;
 
         // Build string offset map for existing strings
         let mut string_map = build_string_map(&string_block);
         // Keep track of new strings appended (in order)
         let mut new_strings: Vec<String> = Vec::new();
-
-        // Load a schema mapping for this DBC (if available)
-        let schema_map = load_schema_map(schema_dir, &file_name);
 
         // Apply all patches matching this DBC name (case insensitive)
         let mut any_patch_applied = false;
@@ -634,7 +706,7 @@ fn apply_command(
                             key_column,
                             values,
                         } => {
-                            let key_col_index = resolve_key_column_index(key_column, &schema_map, &file_name, &pf_origin);
+                            let key_col_index = resolve_key_column_index(key_column, &schema, &file_name, &pf_origin);
 
                             // Find the record with matching key
                             let mut found = false;
@@ -647,7 +719,7 @@ fn apply_command(
                                     apply_values_to_record(
                                         values,
                                         record,
-                                        &schema_map,
+                                        &schema,
                                         &mut string_map,
                                         &mut new_strings,
                                         &string_block,
@@ -667,8 +739,8 @@ fn apply_command(
                                 );
                             }
                         }
-                        PatchEntry::Insert { key, key_column, values } => {
-                            let key_col_index = resolve_key_column_index(key_column, &schema_map, &file_name, &pf_origin);
+                        PatchEntry::Insert { key, key_column, allow_duplicate, values } => {
+                            let key_col_index = resolve_key_column_index(key_column, &schema, &file_name, &pf_origin);
 
                             // Create new record filled with zeros
                             let mut new_record = vec![0u32; header.field_count as usize];
@@ -680,9 +752,9 @@ fn apply_command(
                                     if let Ok(idx) = field_name.parse::<usize>() {
                                         idx == key_col_index
                                     } else {
-                                        schema_map
+                                        schema
                                             .as_ref()
-                                            .and_then(|schema| schema.get(&field_name.to_lowercase()))
+                                            .and_then(|s| s.map.get(&field_name.to_lowercase()))
                                             .map_or(false, |&idx| idx == key_col_index)
                                     }
                                 });
@@ -697,7 +769,7 @@ fn apply_command(
                             apply_values_to_record(
                                 values,
                                 &mut new_record,
-                                &schema_map,
+                                &schema,
                                 &mut string_map,
                                 &mut new_strings,
                                 &string_block,
@@ -708,7 +780,8 @@ fn apply_command(
 
                             // Check for duplicate keys: if the key value in the new record already exists in the
                             // records list at the same key column, warn and skip this insert.
-                            if key_col_index < new_record.len() {
+                            // `allow_duplicate` bypasses the check for tables whose key column is not unique.
+                            if key_col_index < new_record.len() && !*allow_duplicate {
                                 let new_key_val = new_record[key_col_index];
                                 if records.iter().any(|r| {
                                     if key_col_index < r.len() {
@@ -735,9 +808,10 @@ fn apply_command(
                         PatchEntry::Copy {
                             key,
                             key_column,
+                            allow_duplicate,
                             values,
                         } => {
-                            let key_col_index = resolve_key_column_index(key_column, &schema_map, &file_name, &pf_origin);
+                            let key_col_index = resolve_key_column_index(key_column, &schema, &file_name, &pf_origin);
                             // Find the record to copy
                             let mut found = false;
                             for record in &records {
@@ -752,7 +826,7 @@ fn apply_command(
                                     apply_values_to_record(
                                         values,
                                         &mut new_record,
-                                        &schema_map,
+                                        &schema,
                                         &mut string_map,
                                         &mut new_strings,
                                         &string_block,
@@ -764,7 +838,7 @@ fn apply_command(
                                     // resolved key column to retrieve the new key value and check against
                                     // existing records.  If a duplicate is found, skip adding the new record and
                                     // warn.  Otherwise, push it to the list.
-                                    if key_col_index < new_record.len() {
+                                    if key_col_index < new_record.len() && !*allow_duplicate {
                                         let new_key_val = new_record[key_col_index];
                                         if records.iter().any(|r| {
                                             if key_col_index < r.len() {
@@ -816,7 +890,7 @@ fn apply_command(
 
         // Build output path
         let out_path = out_dir.join(&file_name);
-        write_dbc(&out_path, &header, &records, &string_block)
+        write_dbc(&out_path, &header, &records, &string_block, field_types)
             .with_context(|| format!("Failed to write output DBC for {}", file_name))?;
         println!("Wrote {}", out_path.display());
         written.push(out_path);

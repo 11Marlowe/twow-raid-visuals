@@ -1,0 +1,45 @@
+# CharStartOutfit.dbc - starting outfit shown per (race, class, gender).
+# Packed layout: 41 fields, 152-byte records:
+#   5 scalar fields (u32 + 4 x u8) followed by three 12-element u32 arrays.
+fields:
+  - ID
+  - race:u8
+  - class:u8
+  - gender:u8
+  - outfitId:u8
+  - itemId_0
+  - itemId_1
+  - itemId_2
+  - itemId_3
+  - itemId_4
+  - itemId_5
+  - itemId_6
+  - itemId_7
+  - itemId_8
+  - itemId_9
+  - itemId_10
+  - itemId_11
+  - displayInfo_0
+  - displayInfo_1
+  - displayInfo_2
+  - displayInfo_3
+  - displayInfo_4
+  - displayInfo_5
+  - displayInfo_6
+  - displayInfo_7
+  - displayInfo_8
+  - displayInfo_9
+  - displayInfo_10
+  - displayInfo_11
+  - invType_0
+  - invType_1
+  - invType_2
+  - invType_3
+  - invType_4
+  - invType_5
+  - invType_6
+  - invType_7
+  - invType_8
+  - invType_9
+  - invType_10
+  - invType_11

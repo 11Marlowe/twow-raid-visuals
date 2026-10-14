@@ -1,0 +1,22 @@
+# ChrClasses.dbc - playable class definitions.
+# Uniform layout: 17 fields, 68-byte records.
+# Fields 5-12 are the localized name strings, field 14 the class file token
+# (e.g. WARRIOR, NECROMANCER); both are string offsets handled by the tool.
+fields:
+  - ClassID
+  - unk1
+  - unk2
+  - powerType
+  - petNameToken
+  - name_lang_0
+  - name_lang_1
+  - name_lang_2
+  - name_lang_3
+  - name_lang_4
+  - name_lang_5
+  - name_lang_6
+  - name_lang_7
+  - nameFlags
+  - filename
+  - spellfamily
+  - flags2

@@ -104,7 +104,8 @@ The tool applies all patches in ascending filename order and reports warnings al
 ### Features
 
 - **DBC parsing and writing** – Reads vanilla DBC tables, applies patches and writes out new files.  
-A lightweight parser operates on untyped 32‑bit fields; built‑in YAML schemas (derived from WDBXEditor’s `Classic 1.12.1` definitions) allow you to refer to fields by name.  
+Fields are 32‑bit by default; built‑in YAML schemas (derived from WDBXEditor’s `Classic 1.12.1` definitions) allow you to refer to fields by name.  
+Schemas may also declare `u8`/`u32`/`f32` field types, which is required for tables with packed record layouts such as `CharBaseInfo.dbc` (2‑byte records) and `CharStartOutfit.dbc` (mixed 8‑ and 32‑bit fields).  
 Schema files in `schema` are used automatically, and you can override them by providing your own `schema` directory.
 - **Patch format with `update`, `insert` and `copy` actions** – YAML patches can update existing records, insert entirely new rows (optionally specifying a `key` and `key_column` for the primary key), or copy a record and modify selected fields.  
 Floats in patches are transparently converted to their 32‑bit bit patterns, so writing `0.5` is equivalent to specifying its raw integer representation.
@@ -112,7 +113,8 @@ Floats in patches are transparently converted to their 32‑bit bit patterns, so
 Multiple sections targeting the same table are concatenated rather than overwritten.
 - **Deterministic ordering** – When no explicit patch list is provided, all `.yaml` or `.yml` files in the patch directory are sorted alphabetically and applied in order.  
 This allows you to layer patches (e.g. `0‑base.yaml`, `1‑boss.yaml`, `z‑test.yaml`).
-- **Duplicate detection** – When inserting or copying, the tool checks whether the new primary key already exists and skips the change with a warning to prevent duplicate IDs.
+- **Duplicate detection** – When inserting or copying, the tool checks whether the new primary key already exists and skips the change with a warning to prevent duplicate IDs.  
+Set `allow_duplicate: true` on an insert/copy to bypass this check for tables whose key column is not unique on its own (for example `CharBaseInfo.dbc`, keyed by a `(race, class)` pair).
 - **Contextual warnings** – Any warning emitted while applying patches identifies the originating patch file, making it easier to track down invalid field names or missing schemas.
 - **Includes support** – The `build` command can bundle any files under an `includes/` directory (or a directory you specify with `--includes-dir`) into the MPQ alongside your DBCs.  
 This is useful for adding custom models or textures such as the new area indicators.
@@ -130,12 +132,16 @@ Each change object must have a `type` field, which may be `update`, `insert` or 
 
 - **update** – Locate a row where `key_column` (default 0) matches `key`, then change the specified fields.
 - **insert** – Create a new row with all columns initialised to zero.  Set values from the `values` mapping.  
-You can include `key` and `key_column` to assign a primary key unless it is supplied in `values`.
+You can include `key` and `key_column` to assign a primary key unless it is supplied in `values`.  
+Set `allow_duplicate: true` to skip the duplicate‑key check (see above).
 - **copy** – Duplicate an existing row identified by `key`/`key_column`, then apply the `values` mapping.  
-If you omit the primary key from `values`, it is inherited from the original, so you should normally include a new `ID`.
+If you omit the primary key from `values`, it is inherited from the original, so you should normally include a new `ID`.  
+`allow_duplicate: true` works as for `insert`.
 
 Field identifiers may be either numeric strings (zero‑based column numbers) or names defined in the schema.  
 Values may be integers, strings or floats; floats are converted to their 32‑bit representations on write.
+
+Schema entries may be plain names (`ID`), typed names (`race:u8`) or mappings (`{ name: race, type: u8 }`).  Types are `u8`, `u32` (default) and `f32`; all fields in a packed table must be listed with a type so the record width can be validated.
 
 ### Building and usage
 
@@ -173,9 +179,9 @@ MPQ packaging is optional; omit `--mpq` if you only need the patched DBC files.
 
 ### Limitations
 
-- **Simplified typing** – The default parser stores every field as a 32‑bit integer.  
-The schemas allow you to reference fields by name but do not change their underlying type.  
-Multi‑column arrays are flattened; floats and arrays are still written as raw bits.  
+- **Field typing** – By default every field is stored as a 32‑bit integer; floats and arrays are written as raw bits.  
+Packed tables can be handled with a typed schema (`u8`/`u32`/`f32`), but no other field widths are supported.  
+Multi‑column arrays are flattened.  
 - **Vanilla format only** – The current implementation targets WoW 1.12 (WDBC).  
 Newer formats with hash tables (WDB2/WDB5) are not supported.
 - **Duplicate strings** – New string values are appended to the string block even if identical strings already exist.  
