@@ -1,0 +1,25 @@
+# Talent.dbc - talent tree definitions (21 fields, 84-byte records).
+# Server side: DBCStores.cpp (TalentEntry).  Row/col are 0-based
+# (tier/column); prereqRank is a 0-based slot index into the prereq's ranks.
+fields:
+  - id
+  - talentTab          # TalentTab.dbc id
+  - tierID             # row (0-based)
+  - columnIndex        # column (0-based)
+  - rank1
+  - rank2
+  - rank3
+  - rank4
+  - rank5
+  - unknown_9
+  - unknown_10
+  - unknown_11
+  - unknown_12
+  - prereqTalent       # DependsOn (Talent.dbc id)
+  - unknown_14
+  - unknown_15
+  - prereqRank         # DependsOnRank
+  - unknown_17
+  - unknown_18
+  - flags              # needAddInSpellBook (1 on active talents)
+  - requiredSpellID    # DependsOnSpell

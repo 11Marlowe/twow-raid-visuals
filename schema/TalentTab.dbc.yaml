@@ -1,0 +1,18 @@
+# TalentTab.dbc - talent tab (tree) definitions (15 fields, 60-byte records).
+# Server side: DBCStores.cpp (TalentTabEntry).
+fields:
+  - id
+  - name_lang_0
+  - name_lang_1
+  - name_lang_2
+  - name_lang_3
+  - name_lang_4
+  - name_lang_5
+  - name_lang_6
+  - name_lang_7
+  - nameFlags
+  - spellIcon
+  - raceMask
+  - classMask
+  - orderIndex
+  - backgroundFile
