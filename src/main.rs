@@ -108,6 +108,11 @@ pub struct Schema {
     pub map: HashMap<String, usize>,
     /// Storage type per column, in schema order.
     pub types: Vec<FieldType>,
+    /// Column indices the patcher stable-sorts the records by after applying
+    /// all ops (schema `sort:` entry).  Some 1.12 clients index rows by their
+    /// position in the file, so added/reordered rows must be written in the
+    /// canonical (e.g. tab/tier/column) order.
+    pub sort_columns: Vec<usize>,
 }
 
 /// Resolves a key column name or index to a numeric index
@@ -562,6 +567,22 @@ fn parse_field_entry(
     }
 }
 
+/// Resolve the schema `sort:` field names to column indices.  Unknown names
+/// (and names the schema does not define) are reported and ignored.
+fn resolve_sort_columns(names: &[String], map: &HashMap<String, usize>) -> Vec<usize> {
+    let mut columns = Vec::new();
+    for name in names {
+        if let Ok(idx) = name.parse::<usize>() {
+            columns.push(idx);
+        } else if let Some(&idx) = map.get(name) {
+            columns.push(idx);
+        } else {
+            println!("Warning: unknown sort field '{}' in schema - ignored", name);
+        }
+    }
+    columns
+}
+
 /// Load the schema for a given DBC file.  The schema directory must contain
 /// a YAML file whose name is derived from the DBC file name with `.yaml`
 /// appended (for example `Spell.dbc.yaml`).  The YAML can be a sequence of
@@ -598,12 +619,13 @@ fn load_schema(schema_dir: &Path, dbc_file_name: &str) -> Option<Schema> {
         };
         let mut map: HashMap<String, usize> = HashMap::new();
         let mut types: Vec<FieldType> = Vec::new();
+        let mut sort_names: Vec<String> = Vec::new();
         match value {
             serde_yaml::Value::Sequence(seq) => {
                 for (i, item) in seq.iter().enumerate() {
                     parse_field_entry(item, i, &mut map, &mut types);
                 }
-                return Some(Schema { map, types });
+                return Some(Schema { map, types, sort_columns: Vec::new() });
             }
             serde_yaml::Value::Mapping(schema_map) => {
                 // Try to find a "fields" entry
@@ -616,13 +638,27 @@ fn load_schema(schema_dir: &Path, dbc_file_name: &str) -> Option<Schema> {
                                     parse_field_entry(item, i, &mut map, &mut types);
                                 }
                                 found_fields = true;
-                                break;
+                            }
+                        } else if key_name == "sort" {
+                            if let serde_yaml::Value::Sequence(seq) = v {
+                                for item in seq.iter() {
+                                    match item {
+                                        serde_yaml::Value::String(name) => {
+                                            sort_names.push(name.to_lowercase())
+                                        }
+                                        serde_yaml::Value::Number(num) => {
+                                            sort_names.push(num.to_string())
+                                        }
+                                        _ => {}
+                                    }
+                                }
                             }
                         }
                     }
                 }
                 if found_fields {
-                    return Some(Schema { map, types });
+                    let sort_columns = resolve_sort_columns(&sort_names, &map);
+                    return Some(Schema { map, types, sort_columns });
                 }
                 // Fallback: treat mapping keys as names and values as indices
                 let mut indexed: Vec<(usize, String)> = Vec::new();
@@ -639,7 +675,8 @@ fn load_schema(schema_dir: &Path, dbc_file_name: &str) -> Option<Schema> {
                     for (i, name) in indexed {
                         map.insert(name, i);
                     }
-                    return Some(Schema { map, types });
+                    let sort_columns = resolve_sort_columns(&sort_names, &map);
+                    return Some(Schema { map, types, sort_columns });
                 }
             }
             _ => {}
@@ -876,6 +913,28 @@ fn apply_command(
                 }
             }
             any_patch_applied = true;
+        }
+
+        // Optional canonical record ordering (schema `sort:`).  Stable-sort
+        // the records once all patches are applied: some 1.12 clients index
+        // rows by their position in the file (the talent pane in particular),
+        // so edited/added rows must live in sorted position.
+        if let Some(ref schema) = schema {
+            if !schema.sort_columns.is_empty() {
+                let cols = schema.sort_columns.clone();
+                records.sort_by(|a, b| {
+                    for &col in &cols {
+                        let av = a.get(col).copied().unwrap_or(0);
+                        let bv = b.get(col).copied().unwrap_or(0);
+                        match av.cmp(&bv) {
+                            std::cmp::Ordering::Equal => continue,
+                            other => return other,
+                        }
+                    }
+                    std::cmp::Ordering::Equal
+                });
+                println!("Sorted {} records by columns {:?}", records.len(), cols);
+            }
         }
 
         // Build final string block by appending new strings

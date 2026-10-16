@@ -1,6 +1,15 @@
 # Talent.dbc - talent tree definitions (21 fields, 84-byte records).
 # Server side: DBCStores.cpp (TalentEntry).  Row/col are 0-based
 # (tier/column); prereqRank is a 0-based slot index into the prereq's ranks.
+#
+# The 1.12 client's talent pane indexes the per-tab talent list by ROW ORDER,
+# so records must be written ordered by (tab, tier, column); the patcher
+# stable-sorts the records after applying all ops (wowdev.wiki: edited/added
+# talent rows are otherwise ignored).
+sort:
+  - talentTab
+  - tierID
+  - columnIndex
 fields:
   - id
   - talentTab          # TalentTab.dbc id
